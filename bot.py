@@ -99,7 +99,7 @@ async def start_handler(client, message):
     text = (
         "🎬 **ZEE SARTHAK 24/7 CLOUD RECORDER** 🎬\n\n"
         "**Usage:**\n"
-        "• `/rec 00:01:00` (Direct Zee Sarthak)\n"
+        "• `/rec 00:01:00` (Audio-Synced Zee Sarthak)\n"
         "• `/rec <URL> 00:30:00` (Custom Streamlink URL)"
     )
     await message.reply_text(text)
@@ -133,27 +133,26 @@ async def record_handler(client, message):
 
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Recording", callback_data=f"cancel|{task_id}")]])
     status_msg = await message.reply_text(
-        f"🔴 **RECORDING INITIALIZED**\n"
+        f"🔴 **RECORDING & AUDIO-SYNCING**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏱️ **Target Duration:** `{duration_str}`\n"
-        f"⚙️ **Engine:** `Streamlink AIO`\n"
-        f"⏳ Connecting cloud stream...",
+        f"⚙️ **Engine:** `Streamlink + PTS Sync`\n"
+        f"⏳ Connecting live stream...",
         reply_markup=markup
     )
 
-    cmd = [
-        "streamlink",
-        "--http-header", f"User-Agent={USER_AGENT}",
-        "--http-header", f"Referer={REFERER}",
-        "--hls-duration", duration_str,
-        "--default-stream", "best",
-        stream_url, "best",
-        "-o", output_file
-    ]
+    # Streamlink capture with auto PTS & audio sync remux
+    shell_cmd = (
+        f'streamlink --http-header "User-Agent={USER_AGENT}" '
+        f'--http-header "Referer={REFERER}" '
+        f'--hls-duration {duration_str} '
+        f'--default-stream best "{stream_url}" best --stdout | '
+        f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+    )
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+        proc = await asyncio.create_subprocess_shell(
+            shell_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -178,11 +177,11 @@ async def record_handler(client, message):
             bar = make_bar(pct)
 
             text = (
-                f"🔴 **RECORDING LIVE STREAM**\n"
+                f"🔴 **RECORDING LIVE STREAM (SYNC ON)**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"[{bar}] `{pct:.1f}%`\n"
                 f"⏱️ **Recorded:** `{format_seconds(elapsed)}` / `{duration_str}`\n"
-                f"⚡ **Engine:** `Streamlink`"
+                f"⚡ **Engine:** `Streamlink + Audio Sync`"
             )
             try:
                 await status_msg.edit_text(text, reply_markup=markup)
@@ -208,7 +207,7 @@ async def record_handler(client, message):
         await client.send_video(
             chat_id=message.chat.id,
             video=output_file,
-            caption=f"📺 **Zee Sarthak Recording**\n⏱️ **Duration:** `{duration_str}`",
+            caption=f"📺 **Zee Sarthak Recording (Synced)**\n⏱️ **Duration:** `{duration_str}`",
             supports_streaming=True,
             progress=upload_progress,
             progress_args=(status_msg, start_up, task_id)
@@ -257,16 +256,12 @@ async def start_web_server():
     print(f"🌐 Health Server running on port {PORT}")
 
 async def main():
-    # Web server ko background task banaya
     asyncio.create_task(start_web_server())
-    
-    # Pyrogram client start
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & LISTENING: @{me.username}")
+    print(f"✅ BOT LIVE & SYNC READY: @{me.username}")
     print("====================================")
-    
     await idle()
     await app.stop()
 
