@@ -2,6 +2,10 @@ import os
 import gc
 import time
 import asyncio
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -9,7 +13,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQ
 class StopTransmission(Exception):
     pass
 
-# Environment Variables (Set these on Render Dashboard)
 API_ID = int(os.environ.get("API_ID", "29968148"))
 API_HASH = os.environ.get("API_HASH", "0dc95a4aa9b3514b9db31a4331bf630a")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8456919664:AAHij8u6pBZ_vtwEnVRYacz2FP8vg8b_1z0")
@@ -57,7 +60,7 @@ def safe_file_cleanup(file_path):
     if file_path and os.path.exists(file_path):
         try:
             os.remove(file_path)
-            print(f"🧹 Cleaned from disk: {file_path}")
+            print(f"🧹 Cleaned: {file_path}")
         except Exception as e:
             print(f"⚠️ Delete error: {e}")
 
@@ -217,7 +220,6 @@ async def record_handler(client, message):
     except Exception as e:
         await status_msg.edit_text(f"⚠️ **Error:** `{str(e)}`")
     finally:
-        # Guarantee instant disk cleanup to prevent Render disk full crash
         safe_file_cleanup(output_file)
         if task_id in ACTIVE_TASKS:
             del ACTIVE_TASKS[task_id]
@@ -242,9 +244,8 @@ async def cancel_callback(client, callback_query: CallbackQuery):
     else:
         await callback_query.answer("Task not found.")
 
-# Dummy HTTP Server to satisfy Render Port Binding & Uptime Pings
 async def web_root(request):
-    return web.Response(text="Zee Sarthak Recorder Bot is Live and Healthy 🚀")
+    return web.Response(text="Zee Sarthak Recorder Bot is Live 🚀")
 
 async def start_web_server():
     server = web.Application()
@@ -253,17 +254,21 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌐 Dummy Health Server running on port {PORT}")
+    print(f"🌐 Health Server running on port {PORT}")
 
 async def main():
-    await start_web_server()
+    # Web server ko background task banaya
+    asyncio.create_task(start_web_server())
+    
+    # Pyrogram client start
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT DEPLOYED: @{me.username}")
+    print(f"✅ BOT LIVE & LISTENING: @{me.username}")
     print("====================================")
+    
     await idle()
     await app.stop()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.run(main())
