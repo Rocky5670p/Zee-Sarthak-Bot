@@ -3,6 +3,7 @@ import gc
 import time
 import asyncio
 import logging
+import psutil # New library added
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,6 +34,23 @@ app = Client(
 
 ACTIVE_TASKS = {}
 LAST_UPLOAD_UPDATE = {}
+
+# System Stats Function
+def get_system_stats():
+    cpu = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    return (
+        f"📊 **SERVER RESOURCE STATS**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🖥️ **CPU Usage:** `{cpu}%`\n"
+        f"💾 **RAM Usage:** `{mem.percent}%`\n"
+        f"   • Used: `{mem.used // 1024**2} MB`\n"
+        f"   • Total: `{mem.total // 1024**2} MB`\n"
+        f"💽 **Disk Usage:** `{disk.percent}%`\n"
+        f"   • Used: `{disk.used // 1024**3} GB`\n"
+        f"   • Total: `{disk.total // 1024**3} GB`"
+    )
 
 def make_bar(percent):
     filled = int(percent / 10)
@@ -88,7 +106,6 @@ async def upload_progress(current, total, message, start_time, task_id):
         f"  `[{bar}]` **{pct:.1f}%**\n\n"
         f"  ⚡ **Speed:** `{speed:.2f} MB/s`\n"
         f"  📦 **Uploaded:** `{current / (1024*1024):.1f} MB` / `{total / (1024*1024):.1f} MB`\n"
-        f"  🛡️ **Status:** `Encoding & Pushing...`\n"
         "──────────────────────"
     )
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ Cancel Upload", callback_data=f"cancel|{task_id}")]])
@@ -121,12 +138,7 @@ async def start_handler(client, message):
 async def record_handler(client, message):
     args = message.command[1:]
     if not args:
-        await message.reply_text(
-            "⚠️ **Invalid Syntax!**\n\n"
-            "**Examples:**\n"
-            "• `/rec 00:05:00`\n"
-            "• `/rec <M3U8_URL> 00:10:00`"
-        )
+        await message.reply_text("⚠️ **Invalid Syntax!** Use `/rec HH:MM:SS`")
         return
 
     stream_url = DEFAULT_STREAM
@@ -157,7 +169,6 @@ async def record_handler(client, message):
         "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
         f"  🎯 **Target:** `Zee Sarthak Live`\n"
         f"  ⏱️ **Duration:** `{duration_str}`\n"
-        f"  ⚙️ **Sync Mode:** `AV Frame Lock`\n\n"
         "⏳ *Handshaking with stream proxy...*"
     )
     status_msg = await message.reply_text(init_text, reply_markup=markup)
@@ -203,7 +214,6 @@ async def record_handler(client, message):
                 f"  `[{bar}]` **{pct:.1f}%**\n\n"
                 f"  ⏱️ **Progress:** `{format_seconds(elapsed)}` / `{duration_str}`\n"
                 f"  📡 **Source:** `Zee Sarthak Live`\n"
-                f"  ⚡ **Audio Sync:** `Active (AAC Locked)`\n"
                 "──────────────────────"
             )
             try:
@@ -220,7 +230,7 @@ async def record_handler(client, message):
             return
 
         if not os.path.exists(output_file) or os.path.getsize(output_file) < 5000:
-            await status_msg.edit_text("❌ **Capture Failed!** Stream is offline or link expired.")
+            await status_msg.edit_text("❌ **Capture Failed!** Stream is offline.")
             safe_file_cleanup(output_file)
             return
 
@@ -233,10 +243,7 @@ async def record_handler(client, message):
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏱️ **Duration:** `{duration_str}`\n"
             f"📦 **Size:** `{file_size_mb:.2f} MB`\n"
-            f"⚡ **Sync:** `100% Matched`\n"
-            f"🤖 **Engine:** `Streamlink + FFmpeg`\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "✨ *Recorded via Zee Sarthak Cloud Bot*"
+            f"✨ *Recorded via Zee Sarthak Cloud Bot*"
         )
 
         await client.send_video(
@@ -294,7 +301,8 @@ async def callback_router(client, query: CallbackQuery):
         await query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
 
     elif data == "server_status":
-        await query.answer("🟢 Cloud Server Status: Healthy (24/7 Active)", show_alert=True)
+        stats = get_system_stats()
+        await query.message.edit_text(stats, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
 
     elif data == "back_start":
         text = (
@@ -332,7 +340,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & DESIGNED: @{me.username}")
+    print(f"✅ BOT LIVE & STATS ENABLED: @{me.username}")
     print("====================================")
     await idle()
     await app.stop()
