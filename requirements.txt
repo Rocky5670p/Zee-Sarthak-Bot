@@ -3,3 +3,4 @@ tgcrypto==1.2.5
 streamlink==6.9.0
 aiohttp==3.9.5
 psutil==5.9.8
+pytz==2024.1
