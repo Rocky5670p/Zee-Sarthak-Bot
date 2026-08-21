@@ -3,7 +3,9 @@ import gc
 import time
 import asyncio
 import logging
-import psutil # New library added
+import psutil
+import pytz
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,6 +25,8 @@ DEFAULT_STREAM = "https://shoebinfo.qzz.io/bgmi/zee5.php/0-9-sarthaktv.m3u8"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 REFERER = "https://www.zee5.com/"
 
+IST = pytz.timezone('Asia/Kolkata')
+
 app = Client(
     "ZeeSarthak_Pro_Bot",
     api_id=API_ID,
@@ -34,8 +38,8 @@ app = Client(
 
 ACTIVE_TASKS = {}
 LAST_UPLOAD_UPDATE = {}
+PENDING_SCHEDULES = {}
 
-# System Stats Function
 def get_system_stats():
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory()
@@ -114,47 +118,7 @@ async def upload_progress(current, total, message, start_time, task_id):
     except Exception:
         pass
 
-@app.on_message(filters.command("start"))
-async def start_handler(client, message):
-    text = (
-        "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🤖 **Bot Status:** `Online & Operational 🟢`\n"
-        "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
-        "☁️ **Platform:** `Render Cloud Server`\n\n"
-        "**Available Quick Commands:**\n"
-        "• `/rec 00:01:00` ➔ Record 1 Minute\n"
-        "• `/rec 00:30:00` ➔ Record 30 Minutes\n"
-        "• `/rec <URL> 00:10:00` ➔ Custom Link\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu"),
-         InlineKeyboardButton("📡 Server Status", callback_data="server_status")]
-    ])
-    await message.reply_text(text, reply_markup=markup)
-
-@app.on_message(filters.command("rec"))
-async def record_handler(client, message):
-    args = message.command[1:]
-    if not args:
-        await message.reply_text("⚠️ **Invalid Syntax!** Use `/rec HH:MM:SS`")
-        return
-
-    stream_url = DEFAULT_STREAM
-    time_arg = ""
-
-    if len(args) == 1:
-        time_arg = args[0]
-    elif len(args) >= 2:
-        stream_url = args[0].strip('"').strip("'")
-        time_arg = args[1]
-
-    total_sec = parse_time_to_seconds(time_arg)
-    if not total_sec or total_sec <= 0:
-        await message.reply_text("❌ **Invalid Format!** Use `HH:MM:SS` (e.g. `00:02:30`)")
-        return
-
+async def execute_record_stream(client, chat_id, stream_url, total_sec):
     duration_str = format_seconds(total_sec)
     task_id = str(int(time.time()))
     output_file = f"ZeeSarthak_{task_id}.mp4"
@@ -171,7 +135,7 @@ async def record_handler(client, message):
         f"  ⏱️ **Duration:** `{duration_str}`\n"
         "⏳ *Handshaking with stream proxy...*"
     )
-    status_msg = await message.reply_text(init_text, reply_markup=markup)
+    status_msg = await client.send_message(chat_id, init_text, reply_markup=markup)
 
     shell_cmd = (
         f'streamlink --http-header "User-Agent={USER_AGENT}" '
@@ -247,7 +211,7 @@ async def record_handler(client, message):
         )
 
         await client.send_video(
-            chat_id=message.chat.id,
+            chat_id=chat_id,
             video=output_file,
             caption=caption,
             supports_streaming=True,
@@ -268,6 +232,149 @@ async def record_handler(client, message):
             del LAST_UPLOAD_UPDATE[task_id]
         gc.collect()
 
+@app.on_message(filters.command("start"))
+async def start_handler(client, message):
+    text = (
+        "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 **Bot Status:** `Online & Operational 🟢`\n"
+        "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
+        "☁️ **Platform:** `Render Cloud Server`\n\n"
+        "**Available Commands:**\n"
+        "• `/rec 00:01:00` ➔ Instant Record\n"
+        "• `/rec <URL> 00:30:00` ➔ Custom Link\n"
+        "• `/schedule 01:30:00` ➔ Schedule Default Stream\n"
+        "• `/schedule <URL> 02:00:00` ➔ Schedule Custom Stream\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu"),
+         InlineKeyboardButton("📡 Server Status", callback_data="server_status")]
+    ])
+    await message.reply_text(text, reply_markup=markup)
+
+@app.on_message(filters.command("rec"))
+async def record_cmd(client, message):
+    args = message.command[1:]
+    if not args:
+        await message.reply_text("⚠️ **Invalid Syntax!** Use `/rec HH:MM:SS` ya `/rec <URL> HH:MM:SS`")
+        return
+
+    stream_url = DEFAULT_STREAM
+    time_arg = args[0] if len(args) == 1 else args[1]
+    if len(args) >= 2:
+        stream_url = args[0].strip('"').strip("'")
+
+    total_sec = parse_time_to_seconds(time_arg)
+    if not total_sec or total_sec <= 0:
+        await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS`")
+        return
+
+    await execute_record_stream(client, message.chat.id, stream_url, total_sec)
+
+@app.on_message(filters.command("schedule"))
+async def schedule_cmd(client, message):
+    args = message.command[1:]
+    if not args:
+        await message.reply_text(
+            "⚠️ **Schedule Usage:**\n"
+            "• `/schedule HH:MM:SS` (Default Channel)\n"
+            "• `/schedule <URL> HH:MM:SS`"
+        )
+        return
+
+    stream_url = DEFAULT_STREAM
+    time_arg = args[0] if len(args) == 1 else args[1]
+    if len(args) >= 2:
+        stream_url = args[0].strip('"').strip("'")
+
+    total_sec = parse_time_to_seconds(time_arg)
+    if not total_sec or total_sec <= 0:
+        await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS`")
+        return
+
+    user_id = message.from_user.id
+    PENDING_SCHEDULES[user_id] = {
+        "stream_url": stream_url,
+        "duration_sec": total_sec,
+        "duration_str": format_seconds(total_sec)
+    }
+
+    now_ist = datetime.now(IST).strftime("%I:%M %p")
+    schedule_prompt = (
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "   ⏰ **SET START TIME (IST)**\n"
+        "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"🎯 **Target Duration:** `{format_seconds(total_sec)}`\n"
+        f"🕒 **Current IST Time:** `{now_ist}`\n\n"
+        "👉 **Ab starting time reply karein:**\n"
+        "Examples:\n"
+        "• `2:00pm` ya `02:00 PM`\n"
+        "• `14:30` (24-hour format)\n"
+        "• `08:15am`"
+    )
+    await message.reply_text(schedule_prompt)
+
+@app.on_message(filters.text & ~filters.command(["start", "rec", "schedule", "settings"]))
+async def handle_time_input(client, message):
+    user_id = message.from_user.id
+    if user_id not in PENDING_SCHEDULES:
+        return
+
+    sched_data = PENDING_SCHEDULES.pop(user_id)
+    time_input = message.text.strip()
+
+    target_time = None
+    now = datetime.now(IST)
+
+    for fmt in ["%I:%M%p", "%I:%M %p", "%H:%M", "%I%p"]:
+        try:
+            parsed = datetime.strptime(time_input.replace(" ", "").upper(), fmt.replace(" ", ""))
+            target_time = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+            break
+        except ValueError:
+            pass
+
+    if not target_time:
+        await message.reply_text("❌ **Invalid Time Format!** Examples: `2:00pm`, `02:00 PM`, `14:00`")
+        return
+
+    # Agar time pehle se nikal chuka hai toh agle din ke liye schedule hoga
+    if target_time <= now:
+        target_time += timedelta(days=1)
+
+    wait_seconds = int((target_time - now).total_seconds())
+    end_time = target_time + timedelta(seconds=sched_data["duration_sec"])
+
+    task_id = str(int(time.time()))
+    ACTIVE_TASKS[task_id] = {"cancelled": False, "proc": None, "file": None}
+
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ Cancel Schedule", callback_data=f"cancel|{task_id}")]])
+    
+    confirm_text = (
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "   📅 **RECORDING SCHEDULED**\n"
+        "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"⏱️ **Start Time:** `{target_time.strftime('%I:%M %p (%d %b)')}`\n"
+        f"🏁 **End Time:** `{end_time.strftime('%I:%M %p')}`\n"
+        f"⏳ **Duration:** `{sched_data['duration_str']}`\n"
+        f"⌛ **Waiting In:** `{format_seconds(wait_seconds)}`\n"
+        "──────────────────────\n"
+        "🟢 *Bot will auto-start recording on exact time!*"
+    )
+    status_msg = await message.reply_text(confirm_text, reply_markup=markup)
+
+    async def schedule_worker():
+        await asyncio.sleep(wait_seconds)
+        if not ACTIVE_TASKS.get(task_id, {}).get("cancelled"):
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            await execute_record_stream(client, message.chat.id, sched_data["stream_url"], sched_data["duration_sec"])
+
+    asyncio.create_task(schedule_worker())
+
 @app.on_callback_query()
 async def callback_router(client, query: CallbackQuery):
     data = query.data
@@ -283,7 +390,11 @@ async def callback_router(client, query: CallbackQuery):
                 except Exception:
                     pass
             safe_file_cleanup(f_path)
-            await query.answer("🛑 Cancelled Successfully!", show_alert=True)
+            await query.answer("🛑 Task/Schedule Cancelled Successfully!", show_alert=True)
+            try:
+                await query.message.edit_text("🛑 **Task or Schedule Cancelled by User.**")
+            except:
+                pass
         else:
             await query.answer("Task not active.", show_alert=False)
 
@@ -291,12 +402,13 @@ async def callback_router(client, query: CallbackQuery):
         help_text = (
             "📖 **HOW TO USE RECORDER BOT**\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "1️⃣ **Default Channel (Zee Sarthak):**\n"
+            "1️⃣ **Instant Record:**\n"
             "`/rec 00:02:00` (Records 2 mins)\n\n"
-            "2️⃣ **Custom Stream URL:**\n"
-            "`/rec https://link.m3u8 00:05:00`\n\n"
+            "2️⃣ **Schedule Recording:**\n"
+            "`/schedule 01:00:00`\n"
+            "Bot poochega start time ➔ reply karein `2:00pm`\n\n"
             "3️⃣ **Instant Cancel:**\n"
-            "Click **⛔ Stop & Cancel** at any time."
+            "Click **⛔ Stop & Cancel** button."
         )
         await query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
 
@@ -311,10 +423,11 @@ async def callback_router(client, query: CallbackQuery):
             "🤖 **Bot Status:** `Online & Operational 🟢`\n"
             "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
             "☁️ **Platform:** `Render Cloud Server`\n\n"
-            "**Available Quick Commands:**\n"
-            "• `/rec 00:01:00` ➔ Record 1 Minute\n"
-            "• `/rec 00:30:00` ➔ Record 30 Minutes\n"
-            "• `/rec <URL> 00:10:00` ➔ Custom Link\n"
+            "**Available Commands:**\n"
+            "• `/rec 00:01:00` ➔ Instant Record\n"
+            "• `/rec <URL> 00:30:00` ➔ Custom Link\n"
+            "• `/schedule 01:30:00` ➔ Schedule Default Stream\n"
+            "• `/schedule <URL> 02:00:00` ➔ Schedule Custom Stream\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         markup = InlineKeyboardMarkup([
@@ -340,7 +453,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & STATS ENABLED: @{me.username}")
+    print(f"✅ BOT LIVE & SCHEDULE READY: @{me.username}")
     print("====================================")
     await idle()
     await app.stop()
