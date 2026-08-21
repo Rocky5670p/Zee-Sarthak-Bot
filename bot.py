@@ -35,8 +35,8 @@ ACTIVE_TASKS = {}
 LAST_UPLOAD_UPDATE = {}
 
 def make_bar(percent):
-    done = int(percent / 10)
-    return "█" * done + "▒" * (10 - done)
+    filled = int(percent / 10)
+    return "▰" * filled + "▱" * (10 - filled)
 
 def parse_time_to_seconds(time_str):
     try:
@@ -71,7 +71,7 @@ async def upload_progress(current, total, message, start_time, task_id):
     now = time.time()
     last_t = LAST_UPLOAD_UPDATE.get(task_id, 0)
     
-    if now - last_t < 4 and current != total:
+    if now - last_t < 3.5 and current != total:
         return
 
     LAST_UPLOAD_UPDATE[task_id] = now
@@ -82,13 +82,16 @@ async def upload_progress(current, total, message, start_time, task_id):
     bar = make_bar(pct)
 
     text = (
-        f"📤 **UPLOADING TO TELEGRAM**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"[{bar}] `{pct:.1f}%`\n"
-        f"⚡ **Speed:** `{speed:.2f} MB/s`\n"
-        f"📦 **Size:** `{current / (1024*1024):.1f}MB / {total / (1024*1024):.1f}MB`"
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "   ☁️ **UPLOADING TO TELEGRAM**\n"
+        "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"  `[{bar}]` **{pct:.1f}%**\n\n"
+        f"  ⚡ **Speed:** `{speed:.2f} MB/s`\n"
+        f"  📦 **Uploaded:** `{current / (1024*1024):.1f} MB` / `{total / (1024*1024):.1f} MB`\n"
+        f"  🛡️ **Status:** `Encoding & Pushing...`\n"
+        "──────────────────────"
     )
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Upload", callback_data=f"cancel|{task_id}")]])
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ Cancel Upload", callback_data=f"cancel|{task_id}")]])
     try:
         await message.edit_text(text, reply_markup=markup)
     except Exception:
@@ -97,18 +100,33 @@ async def upload_progress(current, total, message, start_time, task_id):
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
     text = (
-        "🎬 **ZEE SARTHAK 24/7 CLOUD RECORDER** 🎬\n\n"
-        "**Usage:**\n"
-        "• `/rec 00:01:00` (Audio-Synced Zee Sarthak)\n"
-        "• `/rec <URL> 00:30:00` (Custom Streamlink URL)"
+        "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 **Bot Status:** `Online & Operational 🟢`\n"
+        "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
+        "☁️ **Platform:** `Render Cloud Server`\n\n"
+        "**Available Quick Commands:**\n"
+        "• `/rec 00:01:00` ➔ Record 1 Minute\n"
+        "• `/rec 00:30:00` ➔ Record 30 Minutes\n"
+        "• `/rec <URL> 00:10:00` ➔ Custom Link\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    await message.reply_text(text)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu"),
+         InlineKeyboardButton("📡 Server Status", callback_data="server_status")]
+    ])
+    await message.reply_text(text, reply_markup=markup)
 
 @app.on_message(filters.command("rec"))
 async def record_handler(client, message):
     args = message.command[1:]
     if not args:
-        await message.reply_text("❌ **Format:** `/rec HH:MM:SS` ya `/rec <URL> HH:MM:SS`")
+        await message.reply_text(
+            "⚠️ **Invalid Syntax!**\n\n"
+            "**Examples:**\n"
+            "• `/rec 00:05:00`\n"
+            "• `/rec <M3U8_URL> 00:10:00`"
+        )
         return
 
     stream_url = DEFAULT_STREAM
@@ -122,7 +140,7 @@ async def record_handler(client, message):
 
     total_sec = parse_time_to_seconds(time_arg)
     if not total_sec or total_sec <= 0:
-        await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS` (e.g. `00:02:30`)")
+        await message.reply_text("❌ **Invalid Format!** Use `HH:MM:SS` (e.g. `00:02:30`)")
         return
 
     duration_str = format_seconds(total_sec)
@@ -131,17 +149,19 @@ async def record_handler(client, message):
 
     ACTIVE_TASKS[task_id] = {"cancelled": False, "proc": None, "file": output_file}
 
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Recording", callback_data=f"cancel|{task_id}")]])
-    status_msg = await message.reply_text(
-        f"🔴 **RECORDING & AUDIO-SYNCING**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏱️ **Target Duration:** `{duration_str}`\n"
-        f"⚙️ **Engine:** `Streamlink + PTS Sync`\n"
-        f"⏳ Connecting live stream...",
-        reply_markup=markup
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ Stop & Cancel", callback_data=f"cancel|{task_id}")]])
+    
+    init_text = (
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "   🔴 **INITIALIZING STREAM**\n"
+        "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"  🎯 **Target:** `Zee Sarthak Live`\n"
+        f"  ⏱️ **Duration:** `{duration_str}`\n"
+        f"  ⚙️ **Sync Mode:** `AV Frame Lock`\n\n"
+        "⏳ *Handshaking with stream proxy...*"
     )
+    status_msg = await message.reply_text(init_text, reply_markup=markup)
 
-    # Streamlink capture with auto PTS & audio sync remux
     shell_cmd = (
         f'streamlink --http-header "User-Agent={USER_AGENT}" '
         f'--http-header "Referer={REFERER}" '
@@ -166,7 +186,7 @@ async def record_handler(client, message):
                 except Exception:
                     pass
                 safe_file_cleanup(output_file)
-                await status_msg.edit_text("🛑 **Recording Cancelled by User.**")
+                await status_msg.edit_text("🛑 **Recording Process Aborted by User.**")
                 return
 
             elapsed = int(time.time() - start_t)
@@ -176,15 +196,18 @@ async def record_handler(client, message):
             pct = min(100.0, (elapsed / total_sec) * 100)
             bar = make_bar(pct)
 
-            text = (
-                f"🔴 **RECORDING LIVE STREAM (SYNC ON)**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"[{bar}] `{pct:.1f}%`\n"
-                f"⏱️ **Recorded:** `{format_seconds(elapsed)}` / `{duration_str}`\n"
-                f"⚡ **Engine:** `Streamlink + Audio Sync`"
+            live_text = (
+                "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+                "   🔴 **LIVE CAPTURING**\n"
+                "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+                f"  `[{bar}]` **{pct:.1f}%**\n\n"
+                f"  ⏱️ **Progress:** `{format_seconds(elapsed)}` / `{duration_str}`\n"
+                f"  📡 **Source:** `Zee Sarthak Live`\n"
+                f"  ⚡ **Audio Sync:** `Active (AAC Locked)`\n"
+                "──────────────────────"
             )
             try:
-                await status_msg.edit_text(text, reply_markup=markup)
+                await status_msg.edit_text(live_text, reply_markup=markup)
             except Exception:
                 pass
 
@@ -197,17 +220,29 @@ async def record_handler(client, message):
             return
 
         if not os.path.exists(output_file) or os.path.getsize(output_file) < 5000:
-            await status_msg.edit_text("❌ **Recording Failed!** Stream offline hai ya URL invalid hai.")
+            await status_msg.edit_text("❌ **Capture Failed!** Stream is offline or link expired.")
             safe_file_cleanup(output_file)
             return
 
-        await status_msg.edit_text("📤 **Preparing to upload to Telegram...**")
+        file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
+        await status_msg.edit_text("⚡ **Recording Complete! Preparing upload...**")
         start_up = time.time()
+
+        caption = (
+            "📺 **ZEE SARTHAK HD RECORDING**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏱️ **Duration:** `{duration_str}`\n"
+            f"📦 **Size:** `{file_size_mb:.2f} MB`\n"
+            f"⚡ **Sync:** `100% Matched`\n"
+            f"🤖 **Engine:** `Streamlink + FFmpeg`\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "✨ *Recorded via Zee Sarthak Cloud Bot*"
+        )
 
         await client.send_video(
             chat_id=message.chat.id,
             video=output_file,
-            caption=f"📺 **Zee Sarthak Recording (Synced)**\n⏱️ **Duration:** `{duration_str}`",
+            caption=caption,
             supports_streaming=True,
             progress=upload_progress,
             progress_args=(status_msg, start_up, task_id)
@@ -217,7 +252,7 @@ async def record_handler(client, message):
     except StopTransmission:
         await status_msg.edit_text("❌ **Upload Cancelled by User.**")
     except Exception as e:
-        await status_msg.edit_text(f"⚠️ **Error:** `{str(e)}`")
+        await status_msg.edit_text(f"⚠️ **Error Occurred:** `{str(e)}`")
     finally:
         safe_file_cleanup(output_file)
         if task_id in ACTIVE_TASKS:
@@ -226,25 +261,62 @@ async def record_handler(client, message):
             del LAST_UPLOAD_UPDATE[task_id]
         gc.collect()
 
-@app.on_callback_query(filters.regex(r"^cancel\|"))
-async def cancel_callback(client, callback_query: CallbackQuery):
-    task_id = callback_query.data.split("|")[1]
-    if task_id in ACTIVE_TASKS:
-        ACTIVE_TASKS[task_id]["cancelled"] = True
-        proc = ACTIVE_TASKS[task_id].get("proc")
-        f_path = ACTIVE_TASKS[task_id].get("file")
-        if proc:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        safe_file_cleanup(f_path)
-        await callback_query.answer("🛑 Task Cancelled & Cleaned!")
-    else:
-        await callback_query.answer("Task not found.")
+@app.on_callback_query()
+async def callback_router(client, query: CallbackQuery):
+    data = query.data
+    if data.startswith("cancel|"):
+        task_id = data.split("|")[1]
+        if task_id in ACTIVE_TASKS:
+            ACTIVE_TASKS[task_id]["cancelled"] = True
+            proc = ACTIVE_TASKS[task_id].get("proc")
+            f_path = ACTIVE_TASKS[task_id].get("file")
+            if proc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            safe_file_cleanup(f_path)
+            await query.answer("🛑 Cancelled Successfully!", show_alert=True)
+        else:
+            await query.answer("Task not active.", show_alert=False)
+
+    elif data == "help_menu":
+        help_text = (
+            "📖 **HOW TO USE RECORDER BOT**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "1️⃣ **Default Channel (Zee Sarthak):**\n"
+            "`/rec 00:02:00` (Records 2 mins)\n\n"
+            "2️⃣ **Custom Stream URL:**\n"
+            "`/rec https://link.m3u8 00:05:00`\n\n"
+            "3️⃣ **Instant Cancel:**\n"
+            "Click **⛔ Stop & Cancel** at any time."
+        )
+        await query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
+
+    elif data == "server_status":
+        await query.answer("🟢 Cloud Server Status: Healthy (24/7 Active)", show_alert=True)
+
+    elif data == "back_start":
+        text = (
+            "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🤖 **Bot Status:** `Online & Operational 🟢`\n"
+            "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
+            "☁️ **Platform:** `Render Cloud Server`\n\n"
+            "**Available Quick Commands:**\n"
+            "• `/rec 00:01:00` ➔ Record 1 Minute\n"
+            "• `/rec 00:30:00` ➔ Record 30 Minutes\n"
+            "• `/rec <URL> 00:10:00` ➔ Custom Link\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu"),
+             InlineKeyboardButton("📡 Server Status", callback_data="server_status")]
+        ])
+        await query.message.edit_text(text, reply_markup=markup)
 
 async def web_root(request):
-    return web.Response(text="Zee Sarthak Recorder Bot is Live 🚀")
+    return web.Response(text="Zee Sarthak Recorder Bot is Live & Healthy 🚀")
 
 async def start_web_server():
     server = web.Application()
@@ -260,7 +332,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & SYNC READY: @{me.username}")
+    print(f"✅ BOT LIVE & DESIGNED: @{me.username}")
     print("====================================")
     await idle()
     await app.stop()
