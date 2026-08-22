@@ -126,8 +126,8 @@ async def upload_progress(current, total, message, start_time, task_id):
 
 def get_settings_markup(user_id):
     current = get_user_engine(user_id)
-    btn_ffmpeg = f"✅ FFmpeg (Recommended)" if current == "FFmpeg" else "FFmpeg"
-    btn_streamlink = f"✅ Streamlink" if current == "Streamlink" else "Streamlink"
+    btn_ffmpeg = "✅ FFmpeg (Recommended)" if current == "FFmpeg" else "FFmpeg"
+    btn_streamlink = "✅ Streamlink" if current == "Streamlink" else "Streamlink"
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(btn_ffmpeg, callback_data="set_engine|FFmpeg")],
@@ -151,23 +151,25 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
         f"  🎯 **Source:** `{stream_url[:35]}...`\n"
         f"  ⏱️ **Duration:** `{duration_str}`\n"
         f"  ⚙️ **Active Engine:** `{engine}`\n"
-        f"  ⚡ **Audio Sync:** `PTS Lock ON`\n\n"
+        f"  📡 **Mode:** `Auto-Reconnect (3h+ Safe)`\n\n"
         "⏳ *Connecting stream pipeline...*"
     )
     status_msg = await client.send_message(chat_id, init_text, reply_markup=markup)
 
-    # Shell Command generation based on selected Engine
+    # Shell Command generation with Reconnect & Sync flags
     if engine == "Streamlink":
         shell_cmd = (
             f'streamlink --http-header "User-Agent={USER_AGENT}" '
             f'--http-header "Referer={REFERER}" '
+            f'--retry-streams 10 --retry-open 10 --hls-live-restart '
             f'--hls-duration {duration_str} '
             f'--default-stream best "{stream_url}" best --stdout | '
             f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
         )
-    else:  # FFmpeg Engine (Supports Direct .ts, .m3u8, RTMP, HTTP streams)
+    else:  # FFmpeg Engine with Full Reconnection Suite
         shell_cmd = (
             f'ffmpeg -hide_banner -loglevel error '
+            f'-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
             f'-headers "User-Agent: {USER_AGENT}\r\nReferer: {REFERER}\r\n" '
             f'-i "{stream_url}" -t {total_sec} '
             f'-fflags +genpts -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
@@ -214,7 +216,7 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
             except Exception:
                 pass
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
 
         await proc.wait()
 
@@ -297,8 +299,8 @@ async def settings_cmd(client, message):
         "   ⚙️ **ENGINE SETTINGS**\n"
         "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
         f"🔴 **Current Selected Engine:** `{current}`\n\n"
-        "• **FFmpeg:** Best for direct `.ts`, `.m3u8` links, auth tokens, and raw live streams.\n"
-        "• **Streamlink:** Best for master HLS feeds and standard web streams.\n\n"
+        "• **FFmpeg:** Best for direct `.ts`, `.m3u8` links, auth tokens, long schedules.\n"
+        "• **Streamlink:** Best for master HLS feeds and web streams.\n\n"
         "👇 **Select your recording engine:**"
     )
     await message.reply_text(text, reply_markup=get_settings_markup(user_id))
@@ -545,7 +547,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & MULTI-ENGINE READY: @{me.username}")
+    print(f"✅ BOT LIVE & ROBUST RECORDER: @{me.username}")
     print("====================================")
     await idle()
     await app.stop()
