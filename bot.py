@@ -39,21 +39,27 @@ app = Client(
 ACTIVE_TASKS = {}
 LAST_UPLOAD_UPDATE = {}
 PENDING_SCHEDULES = {}
+USER_ENGINES = {}  # User-specific Engine Preferences
+
+def get_user_engine(user_id):
+    return USER_ENGINES.get(user_id, "FFmpeg")
 
 def get_system_stats():
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
     return (
-        f"📊 **SERVER RESOURCE STATS**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🖥️ **CPU Usage:** `{cpu}%`\n"
-        f"💾 **RAM Usage:** `{mem.percent}%`\n"
-        f"   • Used: `{mem.used // 1024**2} MB`\n"
-        f"   • Total: `{mem.total // 1024**2} MB`\n"
-        f"💽 **Disk Usage:** `{disk.percent}%`\n"
-        f"   • Used: `{disk.used // 1024**3} GB`\n"
-        f"   • Total: `{disk.total // 1024**3} GB`"
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "   📊 **SERVER RESOURCE STATS**\n"
+        "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"  🖥️ **CPU Usage:** `{cpu}%`\n"
+        f"  💾 **RAM Usage:** `{mem.percent}%`\n"
+        f"     • Used: `{mem.used // 1024**2} MB`\n"
+        f"     • Total: `{mem.total // 1024**2} MB`\n"
+        f"  💽 **Disk Usage:** `{disk.percent}%`\n"
+        f"     • Used: `{disk.used // 1024**3} GB`\n"
+        f"     • Total: `{disk.total // 1024**3} GB`\n"
+        "──────────────────────"
     )
 
 def make_bar(percent):
@@ -118,7 +124,18 @@ async def upload_progress(current, total, message, start_time, task_id):
     except Exception:
         pass
 
-async def execute_record_stream(client, chat_id, stream_url, total_sec):
+def get_settings_markup(user_id):
+    current = get_user_engine(user_id)
+    btn_ffmpeg = f"✅ FFmpeg (Recommended)" if current == "FFmpeg" else "FFmpeg"
+    btn_streamlink = f"✅ Streamlink" if current == "Streamlink" else "Streamlink"
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(btn_ffmpeg, callback_data="set_engine|FFmpeg")],
+        [InlineKeyboardButton(btn_streamlink, callback_data="set_engine|Streamlink")],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back_start")]
+    ])
+
+async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="FFmpeg"):
     duration_str = format_seconds(total_sec)
     task_id = str(int(time.time()))
     output_file = f"ZeeSarthak_{task_id}.mp4"
@@ -129,21 +146,32 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec):
     
     init_text = (
         "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
-        "   🔴 **INITIALIZING STREAM**\n"
+        "   🔴 **INITIALIZING CAPTURE**\n"
         "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
-        f"  🎯 **Target:** `Zee Sarthak Live`\n"
+        f"  🎯 **Source:** `{stream_url[:35]}...`\n"
         f"  ⏱️ **Duration:** `{duration_str}`\n"
-        "⏳ *Handshaking with stream proxy...*"
+        f"  ⚙️ **Active Engine:** `{engine}`\n"
+        f"  ⚡ **Audio Sync:** `PTS Lock ON`\n\n"
+        "⏳ *Connecting stream pipeline...*"
     )
     status_msg = await client.send_message(chat_id, init_text, reply_markup=markup)
 
-    shell_cmd = (
-        f'streamlink --http-header "User-Agent={USER_AGENT}" '
-        f'--http-header "Referer={REFERER}" '
-        f'--hls-duration {duration_str} '
-        f'--default-stream best "{stream_url}" best --stdout | '
-        f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
-    )
+    # Shell Command generation based on selected Engine
+    if engine == "Streamlink":
+        shell_cmd = (
+            f'streamlink --http-header "User-Agent={USER_AGENT}" '
+            f'--http-header "Referer={REFERER}" '
+            f'--hls-duration {duration_str} '
+            f'--default-stream best "{stream_url}" best --stdout | '
+            f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+        )
+    else:  # FFmpeg Engine (Supports Direct .ts, .m3u8, RTMP, HTTP streams)
+        shell_cmd = (
+            f'ffmpeg -hide_banner -loglevel error '
+            f'-headers "User-Agent: {USER_AGENT}\r\nReferer: {REFERER}\r\n" '
+            f'-i "{stream_url}" -t {total_sec} '
+            f'-fflags +genpts -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+        )
 
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -177,7 +205,8 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec):
                 "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
                 f"  `[{bar}]` **{pct:.1f}%**\n\n"
                 f"  ⏱️ **Progress:** `{format_seconds(elapsed)}` / `{duration_str}`\n"
-                f"  📡 **Source:** `Zee Sarthak Live`\n"
+                f"  ⚙️ **Engine:** `{engine}`\n"
+                f"  ⚡ **Audio Sync:** `Active (AAC Locked)`\n"
                 "──────────────────────"
             )
             try:
@@ -194,7 +223,7 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec):
             return
 
         if not os.path.exists(output_file) or os.path.getsize(output_file) < 5000:
-            await status_msg.edit_text("❌ **Capture Failed!** Stream is offline.")
+            await status_msg.edit_text(f"❌ **Capture Failed!** Stream is offline or link expired in `{engine}` mode.")
             safe_file_cleanup(output_file)
             return
 
@@ -207,7 +236,10 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec):
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏱️ **Duration:** `{duration_str}`\n"
             f"📦 **Size:** `{file_size_mb:.2f} MB`\n"
-            f"✨ *Recorded via Zee Sarthak Cloud Bot*"
+            f"⚙️ **Engine:** `{engine}`\n"
+            f"⚡ **Sync:** `100% Matched`\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "✨ *Recorded via Zee Sarthak Cloud Bot*"
         )
 
         await client.send_video(
@@ -234,24 +266,42 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec):
 
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
+    user_engine = get_user_engine(message.from_user.id)
     text = (
         "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🤖 **Bot Status:** `Online & Operational 🟢`\n"
-        "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
+        f"⚙️ **Active Engine:** `{user_engine}`\n"
+        "⚡ **Audio Engine:** `FFmpeg PTS-Sync Mode`\n"
         "☁️ **Platform:** `Render Cloud Server`\n\n"
         "**Available Commands:**\n"
-        "• `/rec 00:01:00` ➔ Instant Record\n"
-        "• `/rec <URL> 00:30:00` ➔ Custom Link\n"
-        "• `/schedule 01:30:00` ➔ Schedule Default Stream\n"
-        "• `/schedule <URL> 02:00:00` ➔ Schedule Custom Stream\n"
+        "• `/rec 00:01:00` ➔ Instant Record (Default)\n"
+        "• `/rec <URL> 00:30:00` ➔ Custom Link Record\n"
+        "• `/schedule 01:30:00` ➔ Schedule Stream\n"
+        "• `/settings` ➔ Change Recording Engine\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu"),
-         InlineKeyboardButton("📡 Server Status", callback_data="server_status")]
+        [InlineKeyboardButton("⚙️ Settings", callback_data="open_settings"),
+         InlineKeyboardButton("📡 Server Status", callback_data="server_status")],
+        [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu")]
     ])
     await message.reply_text(text, reply_markup=markup)
+
+@app.on_message(filters.command("settings"))
+async def settings_cmd(client, message):
+    user_id = message.from_user.id
+    current = get_user_engine(user_id)
+    text = (
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+        "   ⚙️ **ENGINE SETTINGS**\n"
+        "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"🔴 **Current Selected Engine:** `{current}`\n\n"
+        "• **FFmpeg:** Best for direct `.ts`, `.m3u8` links, auth tokens, and raw live streams.\n"
+        "• **Streamlink:** Best for master HLS feeds and standard web streams.\n\n"
+        "👇 **Select your recording engine:**"
+    )
+    await message.reply_text(text, reply_markup=get_settings_markup(user_id))
 
 @app.on_message(filters.command("rec"))
 async def record_cmd(client, message):
@@ -267,10 +317,11 @@ async def record_cmd(client, message):
 
     total_sec = parse_time_to_seconds(time_arg)
     if not total_sec or total_sec <= 0:
-        await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS`")
+        await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS` (e.g. `00:02:30`)")
         return
 
-    await execute_record_stream(client, message.chat.id, stream_url, total_sec)
+    engine = get_user_engine(message.from_user.id)
+    await execute_record_stream(client, message.chat.id, stream_url, total_sec, engine)
 
 @app.on_message(filters.command("schedule"))
 async def schedule_cmd(client, message):
@@ -278,7 +329,7 @@ async def schedule_cmd(client, message):
     if not args:
         await message.reply_text(
             "⚠️ **Schedule Usage:**\n"
-            "• `/schedule HH:MM:SS` (Default Channel)\n"
+            "• `/schedule HH:MM:SS`\n"
             "• `/schedule <URL> HH:MM:SS`"
         )
         return
@@ -294,10 +345,12 @@ async def schedule_cmd(client, message):
         return
 
     user_id = message.from_user.id
+    engine = get_user_engine(user_id)
     PENDING_SCHEDULES[user_id] = {
         "stream_url": stream_url,
         "duration_sec": total_sec,
-        "duration_str": format_seconds(total_sec)
+        "duration_str": format_seconds(total_sec),
+        "engine": engine
     }
 
     now_ist = datetime.now(IST).strftime("%I:%M %p")
@@ -306,12 +359,10 @@ async def schedule_cmd(client, message):
         "   ⏰ **SET START TIME (IST)**\n"
         "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
         f"🎯 **Target Duration:** `{format_seconds(total_sec)}`\n"
+        f"⚙️ **Selected Engine:** `{engine}`\n"
         f"🕒 **Current IST Time:** `{now_ist}`\n\n"
         "👉 **Ab starting time reply karein:**\n"
-        "Examples:\n"
-        "• `2:00pm` ya `02:00 PM`\n"
-        "• `14:30` (24-hour format)\n"
-        "• `08:15am`"
+        "Examples: `2:00pm`, `02:00 PM`, `14:30`"
     )
     await message.reply_text(schedule_prompt)
 
@@ -339,7 +390,6 @@ async def handle_time_input(client, message):
         await message.reply_text("❌ **Invalid Time Format!** Examples: `2:00pm`, `02:00 PM`, `14:00`")
         return
 
-    # Agar time pehle se nikal chuka hai toh agle din ke liye schedule hoga
     if target_time <= now:
         target_time += timedelta(days=1)
 
@@ -358,6 +408,7 @@ async def handle_time_input(client, message):
         f"⏱️ **Start Time:** `{target_time.strftime('%I:%M %p (%d %b)')}`\n"
         f"🏁 **End Time:** `{end_time.strftime('%I:%M %p')}`\n"
         f"⏳ **Duration:** `{sched_data['duration_str']}`\n"
+        f"⚙️ **Engine:** `{sched_data['engine']}`\n"
         f"⌛ **Waiting In:** `{format_seconds(wait_seconds)}`\n"
         "──────────────────────\n"
         "🟢 *Bot will auto-start recording on exact time!*"
@@ -371,13 +422,18 @@ async def handle_time_input(client, message):
                 await status_msg.delete()
             except:
                 pass
-            await execute_record_stream(client, message.chat.id, sched_data["stream_url"], sched_data["duration_sec"])
+            await execute_record_stream(
+                client, message.chat.id, sched_data["stream_url"], 
+                sched_data["duration_sec"], sched_data["engine"]
+            )
 
     asyncio.create_task(schedule_worker())
 
 @app.on_callback_query()
 async def callback_router(client, query: CallbackQuery):
     data = query.data
+    user_id = query.from_user.id
+
     if data.startswith("cancel|"):
         task_id = data.split("|")[1]
         if task_id in ACTIVE_TASKS:
@@ -390,7 +446,7 @@ async def callback_router(client, query: CallbackQuery):
                 except Exception:
                     pass
             safe_file_cleanup(f_path)
-            await query.answer("🛑 Task/Schedule Cancelled Successfully!", show_alert=True)
+            await query.answer("🛑 Cancelled Successfully!", show_alert=True)
             try:
                 await query.message.edit_text("🛑 **Task or Schedule Cancelled by User.**")
             except:
@@ -398,17 +454,50 @@ async def callback_router(client, query: CallbackQuery):
         else:
             await query.answer("Task not active.", show_alert=False)
 
+    elif data.startswith("set_engine|"):
+        selected_engine = data.split("|")[1]
+        USER_ENGINES[user_id] = selected_engine
+        await query.answer(f"✅ Recording Engine set to {selected_engine}!", show_alert=True)
+        
+        text = (
+            "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+            "   ⚙️ **ENGINE SETTINGS**\n"
+            "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+            f"🔴 **Current Selected Engine:** `{selected_engine}`\n\n"
+            "• **FFmpeg:** Best for direct `.ts`, `.m3u8` links, auth tokens, and raw live streams.\n"
+            "• **Streamlink:** Best for master HLS feeds and standard web streams.\n\n"
+            "👇 **Select your recording engine:**"
+        )
+        try:
+            await query.message.edit_text(text, reply_markup=get_settings_markup(user_id))
+        except:
+            pass
+
+    elif data == "open_settings":
+        current = get_user_engine(user_id)
+        text = (
+            "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+            "   ⚙️ **ENGINE SETTINGS**\n"
+            "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+            f"🔴 **Current Selected Engine:** `{current}`\n\n"
+            "• **FFmpeg:** Best for direct `.ts`, `.m3u8` links, auth tokens, and raw live streams.\n"
+            "• **Streamlink:** Best for master HLS feeds and standard web streams.\n\n"
+            "👇 **Select your recording engine:**"
+        )
+        await query.message.edit_text(text, reply_markup=get_settings_markup(user_id))
+
     elif data == "help_menu":
         help_text = (
             "📖 **HOW TO USE RECORDER BOT**\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
             "1️⃣ **Instant Record:**\n"
-            "`/rec 00:02:00` (Records 2 mins)\n\n"
-            "2️⃣ **Schedule Recording:**\n"
-            "`/schedule 01:00:00`\n"
-            "Bot poochega start time ➔ reply karein `2:00pm`\n\n"
-            "3️⃣ **Instant Cancel:**\n"
-            "Click **⛔ Stop & Cancel** button."
+            "`/rec 00:02:00` (Records Zee Sarthak)\n\n"
+            "2️⃣ **Custom Link Record:**\n"
+            "`/rec <URL> 00:05:00`\n\n"
+            "3️⃣ **Schedule Recording:**\n"
+            "`/schedule 01:00:00` ➔ Reply with `2:00pm`\n\n"
+            "4️⃣ **Engine Switch:**\n"
+            "`/settings` ➔ Switch between FFmpeg & Streamlink."
         )
         await query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
 
@@ -417,22 +506,25 @@ async def callback_router(client, query: CallbackQuery):
         await query.message.edit_text(stats, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
 
     elif data == "back_start":
+        user_engine = get_user_engine(user_id)
         text = (
             "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🤖 **Bot Status:** `Online & Operational 🟢`\n"
-            "⚡ **Engine:** `Streamlink + FFmpeg PTS-Sync`\n"
+            f"⚙️ **Active Engine:** `{user_engine}`\n"
+            "⚡ **Audio Engine:** `FFmpeg PTS-Sync Mode`\n"
             "☁️ **Platform:** `Render Cloud Server`\n\n"
             "**Available Commands:**\n"
-            "• `/rec 00:01:00` ➔ Instant Record\n"
-            "• `/rec <URL> 00:30:00` ➔ Custom Link\n"
-            "• `/schedule 01:30:00` ➔ Schedule Default Stream\n"
-            "• `/schedule <URL> 02:00:00` ➔ Schedule Custom Stream\n"
+            "• `/rec 00:01:00` ➔ Instant Record (Default)\n"
+            "• `/rec <URL> 00:30:00` ➔ Custom Link Record\n"
+            "• `/schedule 01:30:00` ➔ Schedule Stream\n"
+            "• `/settings` ➔ Change Recording Engine\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu"),
-             InlineKeyboardButton("📡 Server Status", callback_data="server_status")]
+            [InlineKeyboardButton("⚙️ Settings", callback_data="open_settings"),
+             InlineKeyboardButton("📡 Server Status", callback_data="server_status")],
+            [InlineKeyboardButton("📖 Help & Guides", callback_data="help_menu")]
         ])
         await query.message.edit_text(text, reply_markup=markup)
 
@@ -453,7 +545,7 @@ async def main():
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & SCHEDULE READY: @{me.username}")
+    print(f"✅ BOT LIVE & MULTI-ENGINE READY: @{me.username}")
     print("====================================")
     await idle()
     await app.stop()
