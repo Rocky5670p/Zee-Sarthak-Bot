@@ -21,6 +21,8 @@ API_HASH = os.environ.get("API_HASH", "0dc95a4aa9b3514b9db31a4331bf630a")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8456919664:AAHij8u6pBZ_vtwEnVRYacz2FP8vg8b_1z0")
 PORT = int(os.environ.get("PORT", 8080))
 
+OWNER_ID = int(os.environ.get("OWNER_ID", "8788390728"))
+
 DEFAULT_STREAM = "https://shoebinfo.qzz.io/bgmi/zee5.php/0-9-sarthaktv.m3u8"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 REFERER = "https://www.zee5.com/"
@@ -39,7 +41,11 @@ app = Client(
 ACTIVE_TASKS = {}
 LAST_UPLOAD_UPDATE = {}
 PENDING_SCHEDULES = {}
-USER_ENGINES = {}  # User-specific Engine Preferences
+USER_ENGINES = {}
+AUTHORIZED_USERS = {OWNER_ID}
+
+def is_authorized(user_id):
+    return user_id in AUTHORIZED_USERS
 
 def get_user_engine(user_id):
     return USER_ENGINES.get(user_id, "FFmpeg")
@@ -126,7 +132,7 @@ async def upload_progress(current, total, message, start_time, task_id):
 
 def get_settings_markup(user_id):
     current = get_user_engine(user_id)
-    btn_ffmpeg = "✅ FFmpeg (Recommended)" if current == "FFmpeg" else "FFmpeg"
+    btn_ffmpeg = "✅ FFmpeg (Default / Stable)" if current == "FFmpeg" else "FFmpeg"
     btn_streamlink = "✅ Streamlink" if current == "Streamlink" else "Streamlink"
 
     return InlineKeyboardMarkup([
@@ -151,31 +157,32 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
         f"  🎯 **Source:** `{stream_url[:35]}...`\n"
         f"  ⏱️ **Duration:** `{duration_str}`\n"
         f"  ⚙️ **Active Engine:** `{engine}`\n"
-        f"  📡 **Mode:** `Auto-Reconnect (3h+ Safe)`\n\n"
+        f"  🛡️ **Watchdog:** `Anti-Stall & Auto-Reconnect`\n\n"
         "⏳ *Connecting stream pipeline...*"
     )
     status_msg = await client.send_message(chat_id, init_text, reply_markup=markup)
 
-    # Shell Command generation with Reconnect & Sync flags
-    if engine == "Streamlink":
-        shell_cmd = (
-            f'streamlink --http-header "User-Agent={USER_AGENT}" '
-            f'--http-header "Referer={REFERER}" '
-            f'--retry-streams 10 --retry-open 10 --hls-live-restart '
-            f'--hls-duration {duration_str} '
-            f'--default-stream best "{stream_url}" best --stdout | '
-            f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
-        )
-    else:  # FFmpeg Engine with Full Reconnection Suite
-        shell_cmd = (
-            f'ffmpeg -hide_banner -loglevel error '
-            f'-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
-            f'-headers "User-Agent: {USER_AGENT}\r\nReferer: {REFERER}\r\n" '
-            f'-i "{stream_url}" -t {total_sec} '
-            f'-fflags +genpts -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
-        )
+    def generate_command():
+        if engine == "Streamlink":
+            return (
+                f'streamlink --http-header "User-Agent={USER_AGENT}" '
+                f'--http-header "Referer={REFERER}" '
+                f'--retry-streams 10 --retry-open 10 --hls-live-restart '
+                f'--hls-duration {duration_str} '
+                f'--default-stream best "{stream_url}" best --stdout | '
+                f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+            )
+        else:
+            return (
+                f'ffmpeg -hide_banner -loglevel error '
+                f'-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+                f'-headers "User-Agent: {USER_AGENT}\r\nReferer: {REFERER}\r\n" '
+                f'-i "{stream_url}" -t {total_sec} '
+                f'-fflags +genpts -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+            )
 
     try:
+        shell_cmd = generate_command()
         proc = await asyncio.create_subprocess_shell(
             shell_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -183,6 +190,8 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
         )
         ACTIVE_TASKS[task_id]["proc"] = proc
         start_t = time.time()
+        last_size = 0
+        stall_count = 0
 
         while proc.returncode is None:
             if ACTIVE_TASKS.get(task_id, {}).get("cancelled"):
@@ -193,6 +202,31 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
                 safe_file_cleanup(output_file)
                 await status_msg.edit_text("🛑 **Recording Process Aborted by User.**")
                 return
+
+            # Anti-Stall Detection Watchdog
+            if os.path.exists(output_file):
+                current_size = os.path.getsize(output_file)
+                if current_size > 0 and current_size == last_size:
+                    stall_count += 1
+                else:
+                    stall_count = 0
+                last_size = current_size
+
+                # Agar 40 sec tak size na badhe toh restart pipeline
+                if stall_count >= 10:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
+                    shell_cmd = generate_command()
+                    proc = await asyncio.create_subprocess_shell(
+                        shell_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    ACTIVE_TASKS[task_id]["proc"] = proc
+                    stall_count = 0
 
             elapsed = int(time.time() - start_t)
             if elapsed > total_sec:
@@ -268,7 +302,22 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
 
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
-    user_engine = get_user_engine(message.from_user.id)
+    user_id = message.from_user.id
+    if not is_authorized(user_id):
+        access_denied_text = (
+            "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+            "   🚫 **ACCESS RESTRICTED**\n"
+            "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+            "⚠️ **Need Access To Use This Bot!**\n"
+            "👉 *Please Contact The Bot Owner To Get Authorized.*\n\n"
+            f"🆔 **Your User ID:** `{user_id}`\n"
+            "──────────────────────\n"
+            "🔒 *Private Server Deployment*"
+        )
+        await message.reply_text(access_denied_text)
+        return
+
+    user_engine = get_user_engine(user_id)
     text = (
         "✨ **ZEE SARTHAK UHD CLOUD RECORDER** ✨\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -290,9 +339,63 @@ async def start_handler(client, message):
     ])
     await message.reply_text(text, reply_markup=markup)
 
+@app.on_message(filters.command("authorize"))
+async def authorize_user_cmd(client, message):
+    if message.from_user.id != OWNER_ID:
+        await message.reply_text("⛔ **Only the Bot Owner can authorize users!**")
+        return
+
+    args = message.command[1:]
+    if not args:
+        await message.reply_text("⚠️ **Usage:** `/authorize <Telegram_User_ID>`")
+        return
+
+    try:
+        target_id = int(args[0].strip())
+        AUTHORIZED_USERS.add(target_id)
+        auth_msg = (
+            "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
+            "   ✅ **USER AUTHORIZED**\n"
+            "┗━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+            f"👤 **User ID:** `{target_id}`\n"
+            "🔓 **Access Level:** `Full Recorder Access`\n"
+            "──────────────────────"
+        )
+        await message.reply_text(auth_msg)
+    except ValueError:
+        await message.reply_text("❌ **Invalid ID!** User ID must be numeric.")
+
+@app.on_message(filters.command("unauthorize"))
+async def unauthorize_user_cmd(client, message):
+    if message.from_user.id != OWNER_ID:
+        await message.reply_text("⛔ **Only the Bot Owner can unauthorize users!**")
+        return
+
+    args = message.command[1:]
+    if not args:
+        await message.reply_text("⚠️ **Usage:** `/unauthorize <Telegram_User_ID>`")
+        return
+
+    try:
+        target_id = int(args[0].strip())
+        if target_id == OWNER_ID:
+            await message.reply_text("❌ **Cannot remove Owner access!**")
+            return
+        if target_id in AUTHORIZED_USERS:
+            AUTHORIZED_USERS.remove(target_id)
+            await message.reply_text(f"🛑 **Access Revoked for ID:** `{target_id}`")
+        else:
+            await message.reply_text("⚠️ **User is not in the authorized list.**")
+    except ValueError:
+        await message.reply_text("❌ **Invalid ID!** User ID must be numeric.")
+
 @app.on_message(filters.command("settings"))
 async def settings_cmd(client, message):
     user_id = message.from_user.id
+    if not is_authorized(user_id):
+        await message.reply_text("🚫 **Access Denied!** Pls Contact The Bot Owner.")
+        return
+
     current = get_user_engine(user_id)
     text = (
         "┏━━━━━━━━━━━━━━━━━━━━━┓\n"
@@ -307,6 +410,11 @@ async def settings_cmd(client, message):
 
 @app.on_message(filters.command("rec"))
 async def record_cmd(client, message):
+    user_id = message.from_user.id
+    if not is_authorized(user_id):
+        await message.reply_text("🚫 **Access Denied!** Pls Contact The Bot Owner.")
+        return
+
     args = message.command[1:]
     if not args:
         await message.reply_text("⚠️ **Invalid Syntax!** Use `/rec HH:MM:SS` ya `/rec <URL> HH:MM:SS`")
@@ -322,11 +430,16 @@ async def record_cmd(client, message):
         await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS` (e.g. `00:02:30`)")
         return
 
-    engine = get_user_engine(message.from_user.id)
+    engine = get_user_engine(user_id)
     await execute_record_stream(client, message.chat.id, stream_url, total_sec, engine)
 
 @app.on_message(filters.command("schedule"))
 async def schedule_cmd(client, message):
+    user_id = message.from_user.id
+    if not is_authorized(user_id):
+        await message.reply_text("🚫 **Access Denied!** Pls Contact The Bot Owner.")
+        return
+
     args = message.command[1:]
     if not args:
         await message.reply_text(
@@ -346,7 +459,6 @@ async def schedule_cmd(client, message):
         await message.reply_text("❌ **Invalid Duration!** Format: `HH:MM:SS`")
         return
 
-    user_id = message.from_user.id
     engine = get_user_engine(user_id)
     PENDING_SCHEDULES[user_id] = {
         "stream_url": stream_url,
@@ -368,10 +480,10 @@ async def schedule_cmd(client, message):
     )
     await message.reply_text(schedule_prompt)
 
-@app.on_message(filters.text & ~filters.command(["start", "rec", "schedule", "settings"]))
+@app.on_message(filters.text & ~filters.command(["start", "rec", "schedule", "settings", "authorize", "unauthorize"]))
 async def handle_time_input(client, message):
     user_id = message.from_user.id
-    if user_id not in PENDING_SCHEDULES:
+    if not is_authorized(user_id) or user_id not in PENDING_SCHEDULES:
         return
 
     sched_data = PENDING_SCHEDULES.pop(user_id)
@@ -436,6 +548,10 @@ async def callback_router(client, query: CallbackQuery):
     data = query.data
     user_id = query.from_user.id
 
+    if not is_authorized(user_id):
+        await query.answer("🚫 Access Denied! Contact Bot Owner.", show_alert=True)
+        return
+
     if data.startswith("cancel|"):
         task_id = data.split("|")[1]
         if task_id in ACTIVE_TASKS:
@@ -499,7 +615,10 @@ async def callback_router(client, query: CallbackQuery):
             "3️⃣ **Schedule Recording:**\n"
             "`/schedule 01:00:00` ➔ Reply with `2:00pm`\n\n"
             "4️⃣ **Engine Switch:**\n"
-            "`/settings` ➔ Switch between FFmpeg & Streamlink."
+            "`/settings` ➔ Switch between FFmpeg & Streamlink.\n\n"
+            "👑 **Admin Commands:**\n"
+            "• `/authorize <USER_ID>` ➔ Grant Access\n"
+            "• `/unauthorize <USER_ID>` ➔ Revoke Access"
         )
         await query.message.edit_text(help_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
 
@@ -547,7 +666,8 @@ async def main():
     await app.start()
     me = await app.get_me()
     print("====================================")
-    print(f"✅ BOT LIVE & ROBUST RECORDER: @{me.username}")
+    print(f"✅ BOT LIVE & SECURED: @{me.username}")
+    print(f"👑 OWNER ID: {OWNER_ID}")
     print("====================================")
     await idle()
     await app.stop()
