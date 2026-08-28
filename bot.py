@@ -20,7 +20,7 @@ class StopTransmission(Exception):
 
 API_ID = int(os.environ.get("API_ID", "29968148"))
 API_HASH = os.environ.get("API_HASH", "0dc95a4aa9b3514b9db31a4331bf630a")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8456919664:AAHij8u6pBZ_vtwEnVRYacz2FP8vg8b_1z0")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8947180081:AAES8NdiOkPb8gHq-MEOv9BX0EGlW70dj0g")
 PORT = int(os.environ.get("PORT", 8080))
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8788390728"))
