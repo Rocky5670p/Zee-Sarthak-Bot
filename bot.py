@@ -5,8 +5,6 @@ import asyncio
 import logging
 import psutil
 import pytz
-import re
-from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
@@ -20,12 +18,15 @@ class StopTransmission(Exception):
 
 API_ID = int(os.environ.get("API_ID", "29968148"))
 API_HASH = os.environ.get("API_HASH", "0dc95a4aa9b3514b9db31a4331bf630a")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8947180081:AAES8NdiOkPb8gHq-MEOv9BX0EGlW70dj0g")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8456919664:AAHij8u6pBZ_vtwEnVRYacz2FP8vg8b_1z0")
 PORT = int(os.environ.get("PORT", 8080))
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8788390728"))
 
 DEFAULT_STREAM = "https://shoebinfo.qzz.io/bgmi/zee5.php/0-9-sarthaktv.m3u8"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+REFERER = "https://www.zee5.com/"
+
 IST = pytz.timezone('Asia/Kolkata')
 
 app = Client(
@@ -48,27 +49,6 @@ def is_authorized(user_id):
 
 def get_user_engine(user_id):
     return USER_ENGINES.get(user_id, "FFmpeg")
-
-def get_dynamic_headers(stream_url):
-    parsed = urlparse(stream_url)
-    domain = f"{parsed.scheme}://{parsed.netloc}"
-    
-    # Specific OTT Domain Matching
-    if "tarangplus.in" in stream_url:
-        referer = "https://www.tarangplus.in/"
-        origin = "https://www.tarangplus.in"
-    elif "zee5.com" in stream_url or "sarthaktv" in stream_url:
-        referer = "https://www.zee5.com/"
-        origin = "https://www.zee5.com"
-    elif "sonyliv" in stream_url:
-        referer = "https://www.sonyliv.com/"
-        origin = "https://www.sonyliv.com"
-    else:
-        referer = f"{domain}/"
-        origin = domain
-
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    return ua, referer, origin
 
 def get_system_stats():
     cpu = psutil.cpu_percent(interval=None)
@@ -152,8 +132,8 @@ async def upload_progress(current, total, message, start_time, task_id):
 
 def get_settings_markup(user_id):
     current = get_user_engine(user_id)
-    btn_ffmpeg = "✅ FFmpeg (Universal / Stable)" if current == "FFmpeg" else "FFmpeg"
-    btn_streamlink = "✅ Streamlink (HLS Master)" if current == "Streamlink" else "Streamlink"
+    btn_ffmpeg = "✅ FFmpeg (Default / Stable)" if current == "FFmpeg" else "FFmpeg"
+    btn_streamlink = "✅ Streamlink" if current == "Streamlink" else "Streamlink"
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(btn_ffmpeg, callback_data="set_engine|FFmpeg")],
@@ -164,7 +144,7 @@ def get_settings_markup(user_id):
 async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="FFmpeg"):
     duration_str = format_seconds(total_sec)
     task_id = str(int(time.time()))
-    output_file = f"Stream_{task_id}.mp4"
+    output_file = f"ZeeSarthak_{task_id}.mp4"
 
     ACTIVE_TASKS[task_id] = {"cancelled": False, "proc": None, "file": output_file}
 
@@ -182,49 +162,29 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
     )
     status_msg = await client.send_message(chat_id, init_text, reply_markup=markup)
 
-    ua, referer, origin = get_dynamic_headers(stream_url)
-
-    # Universal robust capture command generator
     def generate_command():
         if engine == "Streamlink":
-            return [
-                "streamlink",
-                "--http-header", f"User-Agent={ua}",
-                "--http-header", f"Referer={referer}",
-                "--http-header", f"Origin={origin}",
-                "--retry-streams", "10",
-                "--retry-open", "10",
-                "--hls-live-restart",
-                "--hls-duration", duration_str,
-                "--default-stream", "best",
-                stream_url,
-                "best",
-                "-o", output_file,
-                "--force"
-            ]
+            return (
+                f'streamlink --http-header "User-Agent={USER_AGENT}" '
+                f'--http-header "Referer={REFERER}" '
+                f'--retry-streams 10 --retry-open 10 --hls-live-restart '
+                f'--hls-duration {duration_str} '
+                f'--default-stream best "{stream_url}" best --stdout | '
+                f'ffmpeg -fflags +genpts -i pipe:0 -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+            )
         else:
-            headers_str = f"User-Agent: {ua}\r\nReferer: {referer}\r\nOrigin: {origin}\r\n"
-            return [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-reconnect", "1",
-                "-reconnect_at_eof", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-headers", headers_str,
-                "-i", stream_url,
-                "-t", str(total_sec),
-                "-fflags", "+genpts+discardcorrupt",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-bsf:a", "aac_adtstoasc",
-                "-avoid_negative_ts", "make_zero",
-                output_file
-            ]
+            return (
+                f'ffmpeg -hide_banner -loglevel error '
+                f'-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+                f'-headers "User-Agent: {USER_AGENT}\r\nReferer: {REFERER}\r\n" '
+                f'-i "{stream_url}" -t {total_sec} '
+                f'-fflags +genpts -c:v copy -c:a aac -avoid_negative_ts make_zero -y "{output_file}"'
+            )
 
     try:
-        cmd = generate_command()
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+        shell_cmd = generate_command()
+        proc = await asyncio.create_subprocess_shell(
+            shell_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -243,7 +203,6 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
                 await status_msg.edit_text("🛑 **Recording Process Aborted by User.**")
                 return
 
-            # Anti-Stall Watchdog
             if os.path.exists(output_file):
                 current_size = os.path.getsize(output_file)
                 if current_size > 0 and current_size == last_size:
@@ -252,16 +211,15 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
                     stall_count = 0
                 last_size = current_size
 
-                # Stall auto recovery
                 if stall_count >= 10:
                     try:
                         proc.kill()
                     except Exception:
                         pass
                     await asyncio.sleep(2)
-                    cmd = generate_command()
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
+                    shell_cmd = generate_command()
+                    proc = await asyncio.create_subprocess_shell(
+                        shell_cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE
                     )
@@ -308,14 +266,14 @@ async def execute_record_stream(client, chat_id, stream_url, total_sec, engine="
         start_up = time.time()
 
         caption = (
-            "📺 **NON-DRM CLOUD STREAM CAPTURE**\n"
+            "📺 **ZEE SARTHAK HD RECORDING**\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏱️ **Duration:** `{duration_str}`\n"
             f"📦 **Size:** `{file_size_mb:.2f} MB`\n"
             f"⚙️ **Engine:** `{engine}`\n"
             f"⚡ **Sync:** `100% Matched`\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "✨ *Recorded via Cloud Auto Engine*"
+            "✨ *Recorded via Zee Sarthak Cloud Bot*"
         )
 
         await client.send_video(
@@ -364,7 +322,7 @@ async def start_handler(client, message):
         "🤖 **Bot Status:** `Online & Operational 🟢`\n"
         f"⚙️ **Active Engine:** `{user_engine}`\n"
         "⚡ **Audio Engine:** `FFmpeg PTS-Sync Mode`\n"
-        "☁️ **Platform:** `Railway Cloud Server`\n\n"
+        "☁️ **Platform:** `Render Cloud Server`\n\n"
         "**Available Commands:**\n"
         "• `/rec 00:01:00` ➔ Instant Record (Default)\n"
         "• `/rec <URL> 00:30:00` ➔ Custom Link Record\n"
@@ -574,7 +532,7 @@ async def handle_time_input(client, message):
         if not ACTIVE_TASKS.get(task_id, {}).get("cancelled"):
             try:
                 await status_msg.delete()
-            except:
+            except Exception:
                 pass
             await execute_record_stream(
                 client, message.chat.id, sched_data["stream_url"], 
@@ -607,7 +565,7 @@ async def callback_router(client, query: CallbackQuery):
             await query.answer("🛑 Cancelled Successfully!", show_alert=True)
             try:
                 await query.message.edit_text("🛑 **Task or Schedule Cancelled by User.**")
-            except:
+            except Exception:
                 pass
         else:
             await query.answer("Task not active.", show_alert=False)
@@ -628,7 +586,7 @@ async def callback_router(client, query: CallbackQuery):
         )
         try:
             await query.message.edit_text(text, reply_markup=get_settings_markup(user_id))
-        except:
+        except Exception:
             pass
 
     elif data == "open_settings":
@@ -674,7 +632,7 @@ async def callback_router(client, query: CallbackQuery):
             "🤖 **Bot Status:** `Online & Operational 🟢`\n"
             f"⚙️ **Active Engine:** `{user_engine}`\n"
             "⚡ **Audio Engine:** `FFmpeg PTS-Sync Mode`\n"
-            "☁️ **Platform:** `Railway Cloud Server`\n\n"
+            "☁️ **Platform:** `Render Cloud Server`\n\n"
             "**Available Commands:**\n"
             "• `/rec 00:01:00` ➔ Instant Record (Default)\n"
             "• `/rec <URL> 00:30:00` ➔ Custom Link Record\n"
@@ -690,7 +648,7 @@ async def callback_router(client, query: CallbackQuery):
         await query.message.edit_text(text, reply_markup=markup)
 
 async def web_root(request):
-    return web.Response(text="Cloud Recorder Bot is Live & Healthy 🚀")
+    return web.Response(text="Zee Sarthak Recorder Bot is Live & Healthy 🚀")
 
 async def start_web_server():
     server = web.Application()
